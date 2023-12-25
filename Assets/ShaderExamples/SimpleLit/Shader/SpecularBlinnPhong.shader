@@ -77,12 +77,12 @@ Shader "SimpleLit/SpecularBlinnPhong"
                 float3 diffuse = LightingLambert(worldLight.color, worldLight.direction, input.normalWS);
 
                 //specular
-                float3 viewDirWS = GetWorldSpaceViewDir(input.normalWS);
+                float3 viewDirWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 float3 specular = LightingSpecular(worldLight.color, worldLight.direction, input.normalWS, viewDirWS, _Specular, _Glossiness);
 
                 InputData LightingInput = (InputData)0;
                 LightingInput.positionWS = input.positionWS;
-                LightingInput.normalWS = input.normalWS;
+                LightingInput.normalWS = SafeNormalize(input.normalWS);
                 LightingInput.viewDirectionWS = viewDirWS;
 
                 SurfaceData surfaceInput = (SurfaceData)0;
