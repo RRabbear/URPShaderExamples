@@ -2,10 +2,13 @@ Shader "SimpleLit/SpecularBlinnPhong"
 {
     Properties
     {
-        _Color ("Color", Color) = (1, 1, 1, 1)
+        [MainColor] _Color ("Color", Color) = (1, 1, 1, 1)
+        [MainTexture] _MainTex ("MainTex", 2D) = "white" {}
+        [NoScaleOffset][Normal] _NormalMap ("Normal Map", 2D) = "bump" {}
+        _NormalStrength ("Normal Strength", Range(0, 1)) = 1.0
         _Diffuse ("Diffuse", Color) = (1, 1, 1, 1)
         _Specular ("Specular", Color) = (1, 1, 1, 1)
-        _Glossiness ("Glossiness", Float) = 20
+        _Smoothness ("Smoothness", Range(0, 1)) = 0.5
     }
     SubShader
     {
@@ -17,7 +20,7 @@ Shader "SimpleLit/SpecularBlinnPhong"
         Pass
         {
             //use Blinn-Phong model
-            Name "SpecularPerPixel"
+            Name "BlinnPhongLightPass"
             
             Tags
             {
@@ -35,11 +38,22 @@ Shader "SimpleLit/SpecularBlinnPhong"
             //register
             #pragma vertex vert
             #pragma fragment frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
+
+            TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
+            float4 _MainTex_ST;
+
+            TEXTURE2D(_NormalMap); SAMPLER(sampler_NormalMap);
+            float4 _NormalMap_ST;
 
             struct appData
             {
                 float3 positionOS : POSITION;
                 float3 normalOS : NORMAL;
+                float4 tangentOS : TANGENT;
+                float2 uv : TEXCOORD0;
             };
 
             struct v2f
@@ -47,6 +61,8 @@ Shader "SimpleLit/SpecularBlinnPhong"
                 float4 positionCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 float3 normalWS : NORMAL;
+                float4 tangentWS : TANGENT;
+                float2 uv : TEXCOORD1;
             };
 
             v2f vert (appData input)
@@ -59,6 +75,9 @@ Shader "SimpleLit/SpecularBlinnPhong"
 
                 VertexNormalInputs normalInputs = GetVertexNormalInputs(input.normalOS);
                 output.normalWS = normalInputs.normalWS;
+                output.tangentWS = float4(normalInputs.tangentWS, input.tangentOS.w);
+
+                output.uv = TRANSFORM_TEX(input.uv, _MainTex);
 
                 return output;
             }
@@ -66,37 +85,62 @@ Shader "SimpleLit/SpecularBlinnPhong"
             float4 _Color;
             float4 _Diffuse;
             float4 _Specular;
-            float _Glossiness;
+            float _Smoothness;
+            float _NormalStrength;
 
             float4 frag (v2f input) : SV_TARGET
             {
-                //world light
-                Light worldLight = GetMainLight();
+                //get main light
+                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
+                Light worldLight = GetMainLight(shadowCoord);
 
                 //diffuse
                 float3 diffuse = LightingLambert(worldLight.color, worldLight.direction, input.normalWS);
 
                 //specular
                 float3 viewDirWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
-                float3 specular = LightingSpecular(worldLight.color, worldLight.direction, input.normalWS, viewDirWS, _Specular, _Glossiness);
+                float3 specular = LightingSpecular(worldLight.color, worldLight.direction, input.normalWS, viewDirWS, _Specular, _Smoothness);
+
+                //calculate pixel color
+                float4 texSample = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv) * _Color;
+
+                //tangent
+                float3 normalWS = normalize(input.normalWS);
+                float3 normalTS = UnpackNormalScale(SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, input.uv), _NormalStrength);
+                float3x3 tangentToWorld = CreateTangentToWorld(normalWS, input.tangentWS.xyz, input.tangentWS.w);
+                normalWS = normalize(TransformTangentToWorld(normalTS, tangentToWorld));
 
                 InputData LightingInput = (InputData)0;
                 LightingInput.positionWS = input.positionWS;
-                LightingInput.normalWS = SafeNormalize(input.normalWS);
+                LightingInput.normalWS = normalWS;
                 LightingInput.viewDirectionWS = viewDirWS;
+                LightingInput.shadowCoord = shadowCoord;
 
                 SurfaceData surfaceInput = (SurfaceData)0;
-                surfaceInput.albedo = diffuse;
+                surfaceInput.albedo = texSample.rgb;
                 surfaceInput.specular = specular;
-                surfaceInput.smoothness = _Glossiness;
+                surfaceInput.smoothness = _Smoothness;
                 //alpha is not supported now
-                surfaceInput.alpha = _Color.a;
+                surfaceInput.alpha = texSample.a;
                 
-                return UniversalFragmentBlinnPhong(LightingInput, surfaceInput) * _Color;
+                return UniversalFragmentBlinnPhong(LightingInput, surfaceInput);
             }
 
             ENDHLSL
         }
+
+        Pass
+        {
+            Name "ShaderCasterPass"
+
+            Tags
+            {
+                "LightMode" = "ShadowCaster"
+            }
+
+            HLSLPROGRAM
+            #include "ShaderCaster.hlsl"
+            ENDHLSL
+        }
     }
-    FallBack "Diffuse"
 }

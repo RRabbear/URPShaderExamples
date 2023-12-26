@@ -2,7 +2,8 @@ Shader "SimpleLit/SpecularPerPixel"
 {
     Properties
     {
-        _Color ("Color", Color) = (1, 1, 1, 1)
+        [MainColor] _Color ("Color", Color) = (1, 1, 1, 1)
+        [MainTexture] _MainTex ("MainTex", 2D) = "white" {}
         _Diffuse ("Diffuse", Color) = (1, 1, 1, 1)
         _Specular ("Specular", Color) = (1, 1, 1, 1)
         _Glossiness ("Glossiness", Float) = 20
@@ -18,7 +19,7 @@ Shader "SimpleLit/SpecularPerPixel"
         Pass
         {
             //use Blinn model with LightingSpecular function
-            Name "SpecularPerPixel"
+            Name "SpecularPerPixelPass"
             
             Tags
             {
@@ -35,11 +36,18 @@ Shader "SimpleLit/SpecularPerPixel"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile _ _MODEL_PHONG _MODEL_BLINN
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
+
+            TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
+            float4 _MainTex_ST;
 
             struct appData
             {
                 float3 positionOS : POSITION;
                 float3 normalOS : NORMAL;
+                float2 uv : TEXCOORD0;
             };
 
             struct v2f
@@ -47,6 +55,7 @@ Shader "SimpleLit/SpecularPerPixel"
                 float4 positionCS : SV_POSITION;
                 float3 normalWS : NORMAL;
                 float3 positionWS : TEXCOORD0;
+                float2 uv : TEXCOORD1;
             };
 
             v2f vert (appData input)
@@ -60,6 +69,8 @@ Shader "SimpleLit/SpecularPerPixel"
                 VertexNormalInputs normalInputs = GetVertexNormalInputs(input.normalOS);
                 output.normalWS = normalInputs.normalWS;
 
+                output.uv = TRANSFORM_TEX(input.uv, _MainTex);
+
                 return output;
             }
 
@@ -70,8 +81,9 @@ Shader "SimpleLit/SpecularPerPixel"
 
             float4 frag (v2f input) : SV_TARGET
             {
-                //world light
-                Light worldLight = GetMainLight();
+                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
+                Light worldLight = GetMainLight(shadowCoord);
+                half shadow = worldLight.shadowAttenuation;
 
                 //diffuse
                 float3 diffuse = LightingLambert(worldLight.color, worldLight.direction, input.normalWS);
@@ -85,11 +97,27 @@ Shader "SimpleLit/SpecularPerPixel"
                     float3 specular = worldLight.color.rgb * _Specular.rgb * pow(saturate(dot(reflectDir, viewDirWS)), _Glossiness);
                 #endif
 
-                return float4(diffuse + specular + UNITY_LIGHTMODEL_AMBIENT.xyz, 1.0) * _Color;
+                //texture sample
+                float4 texSample = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv);
+
+                return float4((diffuse + specular + UNITY_LIGHTMODEL_AMBIENT.xyz) * shadow, 1.0) * _Color * texSample;
             }
 
             ENDHLSL
         }
+
+        Pass
+        {
+            Name "ShaderCasterPass"
+
+            Tags
+            {
+                "LightMode" = "ShadowCaster"
+            }
+
+            HLSLPROGRAM
+            #include "ShaderCaster.hlsl"
+            ENDHLSL
+        }
     }
-    FallBack "Diffuse"
 }
