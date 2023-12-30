@@ -42,7 +42,8 @@ Shader "ToonShader/ToonShader"
             //pragma
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile_fragment _ _SHADOWS_SOFT
-            #pragma multi_compile_fwdbase
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
             #pragma vertex vert
             #pragma fragment frag
 
@@ -92,6 +93,40 @@ Shader "ToonShader/ToonShader"
             float _RimAmount;
             float _RimThreshold;
 
+            half3 CalToonBlinnPhong(Light light, SurfaceData surfaceData, InputData inputData)
+            {
+                //calculate diffuse
+                //diffuse color = (NormalWS * LightDirection + AmbientColor) * LightColor
+                //why need plus AmbientColor, becuase the dark side need some color for it
+                //why do smoothstep, because we want it looks like anime        
+                half NdotL = dot(inputData.normalWS, light.direction);
+                half lightIntensity = smoothstep(0, 0.01, NdotL * light.shadowAttenuation * light.distanceAttenuation);
+                half3 lightDiffuseColor = (lightIntensity + _AmbientColor.rgb) * light.color;  //add ambient color for dark side
+
+                //calculate specular
+                //specular color = pow(normalWS * (LightDirection + ViewDirectionWS)), smoothness)
+                //to make specular scale easier to adjust, we do exp2
+                //avoid specular area appearing in dark side, we multiply lightIntensity when do pow
+                //also, we do smoothstep to get anime effect
+                #if defined(_SPECGLOSSMAP) || defined(_SPECULAR_COLOR)
+                    half smoothness = exp2(10 * surfaceData.smoothness + 1);
+                half3 halfVec = SafeNormalize(light.direction + inputData.viewDirectionWS);
+                half NdotH = dot(inputData.normalWS, halfVec);
+                half modifier = pow(NdotH * lightIntensity, smoothness);
+                half specularIntensity = smoothstep(0, 0.01, modifier);
+                half3 lightSpecularColor = _Specular.rgb * specularIntensity;
+                #endif
+
+                //calculate rim color
+                //rim is the outline of the light side
+                half NdotV = dot(inputData.viewDirectionWS, inputData.normalWS);
+                half4 rimModifer = (1 - NdotV) * pow(NdotL, _RimThreshold);
+                half rimIntensity = smoothstep(_RimAmount - 0.01, _RimAmount + 0.01, rimModifer);
+                half3 LightRimColor = _RimColor * rimIntensity;
+
+                return lightDiffuseColor + lightSpecularColor + LightRimColor;
+            }
+
             float4 frag (v2f input) : SV_TARGET
             {
                 half4 albedoAlpha = SampleAlbedoAlpha(input.uv, TEXTURE2D_ARGS(_MainTex, sampler_MainTex));
@@ -108,31 +143,17 @@ Shader "ToonShader/ToonShader"
                 inputData.shadowCoord = input.shadowCoord;
 
                 Light light = GetMainLight(inputData.shadowCoord);
-                half3 attenuatedLightColor = light.color * (light.distanceAttenuation * light.shadowAttenuation);
+                half3 color = CalToonBlinnPhong(light, surfaceData, inputData);
 
-                //calculate diffuse              
-                half NdotL = dot(inputData.normalWS, light.direction);
-                half lightIntensity = smoothstep(0, 0.01, NdotL * light.shadowAttenuation);
-                half3 lightDiffuseColor = (lightIntensity + _AmbientColor.rgb) * light.color;  //add ambient color for dark side
+                LightingData lightingData = CreateLightingData(inputData, surfaceData);
+                int pixelLightCount = GetAdditionalLightsCount();
+                for(int i = 0; i < pixelLightCount; i++)
+                {
+                    Light additionalLight = GetAdditionalLight(i, input.positionWS);
+                    color += CalToonBlinnPhong(additionalLight, surfaceData, inputData);
+                }
 
-                //calculate specular
-                #if defined(_SPECGLOSSMAP) || defined(_SPECULAR_COLOR)
-                    half smoothness = exp2(10 * surfaceData.smoothness + 1);
-                half3 halfVec = SafeNormalize(light.direction + inputData.viewDirectionWS);
-                half NdotH = dot(inputData.normalWS, halfVec);
-                half modifier = pow(NdotH * lightIntensity, smoothness);
-                half specularIntensity = smoothstep(0, 0.01, modifier);
-                half3 lightSpecularColor = specularIntensity * surfaceData.specular.rgb * attenuatedLightColor;
-                #endif
-
-                //calculate rim color
-                half NdotV = dot(inputData.viewDirectionWS, inputData.normalWS);
-                float4 rimModifer = (1 - NdotV) * pow(NdotL, _RimThreshold);
-                float rimIntensity = smoothstep(_RimAmount - 0.01, _RimAmount + 0.01, rimModifer);
-                float3 LightRimColor = _RimColor * rimIntensity * attenuatedLightColor;
-
-                half4 color = half4(lightDiffuseColor * surfaceData.albedo + lightSpecularColor * surfaceData.albedo + LightRimColor * surfaceData.albedo, 1.0);
-                return color;
+                return half4(color * surfaceData.albedo, 1.0);
             }
             ENDHLSL
         }
